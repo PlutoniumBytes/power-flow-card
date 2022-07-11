@@ -24,7 +24,7 @@ import {
   round,
   isNumberValue,
 } from "./utils.js";
-import { EntityType } from "./type.js";
+import { EntityType, PowerIO } from "./type.js";
 import { logError } from "./logging.js";
 
 const CIRCLE_CIRCUMFERENCE = 238.76104;
@@ -63,7 +63,7 @@ export class PowerFlowCard extends LitElement {
       min_flow_rate: coerceNumber(config.min_flow_rate, MIN_FLOW_RATE),
       max_flow_rate: coerceNumber(config.max_flow_rate, MAX_FLOW_RATE),
       w_decimals: coerceNumber(config.w_decimals, W_DECIMALS),
-      watt_threshold: coerceNumber(config.watt_threshold),
+      watt_threshold: coerceNumber(config.watt_threshold,1000),
     };
   }
 
@@ -97,15 +97,54 @@ export class PowerFlowCard extends LitElement {
     return coerceNumber(this.hass.states[entity].state);
   };
 
-  private getEntityStateWatts = (entity: string | undefined): number => {
-    if (!entity || !this.entityAvailable(entity)) {
-      this.unavailableOrMisconfiguredError(entity);
-      return 0;
+  private getEntityStateWatts = (entities: string | string[] | undefined): number => {
+    //this.entityInverted(
+
+    if (!entities ) {
+        this.unavailableOrMisconfiguredError(entities);
+        return 0;
     }
-    const stateObj = this.hass.states[entity];
-    const value = coerceNumber(stateObj.state);
-    if (stateObj.attributes.unit_of_measurement === "W") return value;
-    return value * 1000;
+    var arr:string[] = typeof entities === "string" ? [entities] : entities;      
+    var ret:number = 0.0;
+    arr.forEach( (entity) => {
+      if ( this.entityAvailable(entity) ){
+        const stateObj = this.hass.states[entity];
+        const value = coerceNumber(stateObj.state);
+        const factor = (stateObj.attributes.unit_of_measurement === "W") ? 1 : 1000;
+        ret += value * factor;
+      } else {
+        console.log( entity + " not available ");
+      }
+    } );
+    return ret;
+  };
+  
+  private getEntityWatts = (entities: string | string[] | undefined): PowerIO => {
+    //this.entityInverted(
+
+    var ret:PowerIO = { in: 0.0, out:0.0 };
+    if (!entities ) {
+        this.unavailableOrMisconfiguredError(entities);
+        return ret;
+    }
+    var arr:string[] = typeof entities === "string" ? [entities] : entities;      
+    
+    arr.forEach( (entity) => {
+      if ( this.entityAvailable(entity) ){
+        const stateObj = this.hass.states[entity];
+        const value = coerceNumber(stateObj.state);
+        const factor = (stateObj.attributes.unit_of_measurement === "W") ? 1 : 1000;
+        const power = value * factor;
+        if ( power > 0 ){
+           ret.in += power;
+        } else {
+           ret.out -= power;
+        }
+      } else {
+        console.log( entity + " not available ");
+      }
+    } );
+    return ret;
   };
 
   private displayValue = (value: number | null) => {
@@ -127,64 +166,25 @@ export class PowerFlowCard extends LitElement {
     const hasBattery = entities.battery !== undefined;
     const hasSolarProduction = entities.solar !== undefined;
     const hasReturnToGrid =
-      hasGrid &&
-      (typeof entities.grid === "string" || entities.grid.production);
+      hasGrid && hasSolarProduction;
 
+    const gridPower = this.getEntityWatts( entities.grid );
     let totalFromGrid = 0;
     if (hasGrid) {
-      if (typeof entities.grid === "string") {
-        if (this.entityInverted("grid"))
-          totalFromGrid = Math.abs(
-            Math.min(this.getEntityStateWatts(entities.grid), 0)
-          );
-        else
-          totalFromGrid = Math.max(this.getEntityStateWatts(entities.grid), 0);
-      } else {
-        totalFromGrid = this.getEntityStateWatts(entities.grid.consumption);
-      }
+        totalFromGrid = Math.max(this.getEntityStateWatts(entities.grid), 0);      
     }
 
     let totalSolarProduction: number = 0;
     if (hasSolarProduction) {
-      if (this.entityInverted("solar"))
-        totalSolarProduction = Math.abs(
-          Math.min(this.getEntityStateWatts(entities.solar), 0)
-        );
-      else
-        totalSolarProduction = Math.max(
-          this.getEntityStateWatts(entities.solar),
-          0
-        );
+        totalSolarProduction = this.getEntityStateWatts(entities.solar)
     }
 
     let totalBatteryIn: number | null = null;
     let totalBatteryOut: number | null = null;
-    if (hasBattery) {
-      if (typeof entities.battery === "string") {
-        totalBatteryIn = this.entityInverted("battery")
-          ? Math.max(this.getEntityStateWatts(entities.battery), 0)
-          : Math.abs(Math.min(this.getEntityStateWatts(entities.battery), 0));
-        totalBatteryOut = this.entityInverted("battery")
-          ? Math.abs(Math.min(this.getEntityStateWatts(entities.battery), 0))
-          : Math.max(this.getEntityStateWatts(entities.battery), 0);
-      } else {
-        totalBatteryIn = this.getEntityStateWatts(entities.battery?.production);
-        totalBatteryOut = this.getEntityStateWatts(
-          entities.battery?.consumption
-        );
-      }
-    }
-
-    let returnedToGrid: number | null = null;
-    if (hasReturnToGrid) {
-      if (typeof entities.grid === "string") {
-        returnedToGrid = this.entityInverted("grid")
-          ? Math.max(this.getEntityStateWatts(entities.grid), 0)
-          : Math.abs(Math.min(this.getEntityStateWatts(entities.grid), 0));
-      } else {
-        returnedToGrid = this.getEntityStateWatts(entities.grid.production);
-      }
-    }
+    let returnedToGrid: number | null = null;    
+    
+    totalFromGrid = gridPower.in;
+    returnedToGrid = gridPower.out;        
 
     let solarConsumption: number | null = null;
     if (hasSolarProduction) {

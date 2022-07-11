@@ -1,6 +1,7 @@
-export type ComboEntity = {
-  consumption?: string;
-  production?: string;
+
+export type PowerIO = {
+  in: number;
+  out: number;
 };
 
 export type EntityType = "battery" | "grid" | "solar";
