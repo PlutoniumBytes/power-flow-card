@@ -24,7 +24,7 @@ import {
   round,
   isNumberValue,
 } from "./utils.js";
-import { EntityType, PowerIO } from "./type.js";
+import { PowerIO } from "./type.js";
 import { logError } from "./logging.js";
 
 const CIRCLE_CIRCUMFERENCE = 238.76104;
@@ -78,8 +78,8 @@ export class PowerFlowCard extends LitElement {
   private entityAvailable = (entityId: string): boolean =>
     isNumberValue(this.hass.states[entityId]?.state);
 
-  private entityInverted = (entityType: EntityType) =>
-    this._config!.inverted_entities.includes(entityType);
+  private entityInverted = (entity: string) =>
+    this._config!.inverted_entities.includes(entity);
 
   private previousDur: { [name: string]: number } = {};
 
@@ -97,20 +97,21 @@ export class PowerFlowCard extends LitElement {
     return coerceNumber(this.hass.states[entity].state);
   };
 
-  private getEntityStateWatts = (entities: string | string[] | undefined): number => {
-    //this.entityInverted(
-
+  private getEntities = (entities: string | string[] | undefined): string[] => {
     if (!entities ) {
-        this.unavailableOrMisconfiguredError(entities);
-        return 0;
+      return [];
     }
-    var arr:string[] = typeof entities === "string" ? [entities] : entities;      
+    return typeof entities === "string" ? [entities] : entities;
+  }
+
+  private getEntityStateWatts = (entities: string | string[] | undefined): number => {    
     var ret:number = 0.0;
+    var arr:string[] = this.getEntities( entities );
     arr.forEach( (entity) => {
       if ( this.entityAvailable(entity) ){
         const stateObj = this.hass.states[entity];
         const value = coerceNumber(stateObj.state);
-        const factor = (stateObj.attributes.unit_of_measurement === "W") ? 1 : 1000;
+        const factor = ( (stateObj.attributes.unit_of_measurement === "W") ? 1 : 1000 ) * ( this.entityInverted(entity) ? -1.0 : 1.0 );
         ret += value * factor;
       } else {
         console.log( entity + " not available ");
@@ -120,20 +121,13 @@ export class PowerFlowCard extends LitElement {
   };
   
   private getEntityWatts = (entities: string | string[] | undefined): PowerIO => {
-    //this.entityInverted(
-
     var ret:PowerIO = { in: 0.0, out:0.0 };
-    if (!entities ) {
-        this.unavailableOrMisconfiguredError(entities);
-        return ret;
-    }
-    var arr:string[] = typeof entities === "string" ? [entities] : entities;      
-    
+    var arr:string[] = this.getEntities( entities );
     arr.forEach( (entity) => {
       if ( this.entityAvailable(entity) ){
         const stateObj = this.hass.states[entity];
         const value = coerceNumber(stateObj.state);
-        const factor = (stateObj.attributes.unit_of_measurement === "W") ? 1 : 1000;
+        const factor = ((stateObj.attributes.unit_of_measurement === "W") ? 1 : 1000 ) * ( this.entityInverted(entity) ? -1.0 : 1.0 );
         const power = value * factor;
         if ( power > 0 ){
            ret.in += power;
@@ -162,34 +156,22 @@ export class PowerFlowCard extends LitElement {
     const { entities } = this._config;
 
     const hasGrid = entities.grid !== undefined;
-
     const hasBattery = entities.battery !== undefined;
     const hasSolarProduction = entities.solar !== undefined;
-    const hasReturnToGrid =
-      hasGrid && hasSolarProduction;
+    const hasReturnToGrid = hasGrid && hasSolarProduction;
 
+    let totalBatteryIn: number | null = this.getEntityWatts(entities.battery).in;
+    let totalBatteryOut: number | null = this.getEntityWatts(entities.battery).out;
+    let solarConsumption: number | null = null;
+    
     const gridPower = this.getEntityWatts( entities.grid );
-    let totalFromGrid = 0;
-    if (hasGrid) {
-        totalFromGrid = Math.max(this.getEntityStateWatts(entities.grid), 0);      
-    }
-
+    const totalFromGrid = hasGrid ? gridPower.in : null;
+    const returnedToGrid = hasGrid ? gridPower.out : null;
+    
     let totalSolarProduction: number = 0;
     if (hasSolarProduction) {
-        totalSolarProduction = this.getEntityStateWatts(entities.solar)
-    }
-
-    let totalBatteryIn: number | null = null;
-    let totalBatteryOut: number | null = null;
-    let returnedToGrid: number | null = null;    
-    
-    totalFromGrid = gridPower.in;
-    returnedToGrid = gridPower.out;        
-
-    let solarConsumption: number | null = null;
-    if (hasSolarProduction) {
-      solarConsumption =
-        totalSolarProduction - (returnedToGrid ?? 0) - (totalBatteryIn ?? 0);
+        totalSolarProduction = this.getEntityWatts(entities.solar).in;
+        solarConsumption = totalSolarProduction - (returnedToGrid ?? 0) - (totalBatteryIn ?? 0);
     }
 
     let batteryFromGrid: null | number = null;
@@ -200,8 +182,8 @@ export class PowerFlowCard extends LitElement {
       // returned battery energy to the grid
       if (hasBattery) {
         batteryFromGrid = Math.abs(solarConsumption);
-        if (batteryFromGrid > totalFromGrid) {
-          batteryToGrid = Math.min(batteryFromGrid - totalFromGrid, 0);
+        if (batteryFromGrid > (totalFromGrid ?? 0 )) {
+          batteryToGrid = Math.min(batteryFromGrid - ( totalFromGrid ?? 0 ), 0);
           batteryFromGrid = totalFromGrid;
         }
       }
@@ -233,7 +215,7 @@ export class PowerFlowCard extends LitElement {
       batteryConsumption = (totalBatteryOut ?? 0) - (batteryToGrid ?? 0);
     }
 
-    const gridConsumption = Math.max(totalFromGrid - (batteryFromGrid ?? 0), 0);
+    const gridConsumption = Math.max((totalFromGrid ?? 0 ) - (batteryFromGrid ?? 0), 0);
 
     const totalHomeConsumption = Math.max(
       gridConsumption + (solarConsumption ?? 0) + (batteryConsumption ?? 0),
@@ -831,11 +813,11 @@ export class PowerFlowCard extends LitElement {
     }
     path.battery-solar,
     circle.battery-solar {
-      stroke: var(--energy-battery-in-color);
+      stroke: var(--energy-solar-color);
     }
     circle.battery-solar {
       stroke-width: 4;
-      fill: var(--energy-battery-in-color);
+      fill: var(--energy-solar-color);
     }
     .battery-in {
       color: var(--energy-battery-in-color);
